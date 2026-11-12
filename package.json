@@ -1,0 +1,15 @@
+{
+  "name": "youtube-mcp-gas",
+  "version": "1.0.0",
+  "description": "YouTube MCP server that runs as a Google Apps Script web app",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "coverage": "node --test --experimental-test-coverage \"test/*.test.js\"",
+    "build": "node scripts/build.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

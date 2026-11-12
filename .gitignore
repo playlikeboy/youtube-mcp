@@ -1,0 +1,5 @@
+node_modules/
+.build/
+.clasp.json
+.clasprc.json
+.env
