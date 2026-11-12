@@ -87,13 +87,6 @@ function escapeHtml_(text) {
     .replace(/'/g, '&#39;');
 }
 
-/** YYYY-MM-DD (UTC) for the day `days` before `now`. */
-function isoDateDaysAgo_(days, now) {
-  const base = now ? new Date(now.getTime()) : new Date();
-  const millisPerDay = 24 * 60 * 60 * 1000;
-  return new Date(base.getTime() - days * millisPerDay).toISOString().slice(0, 10);
-}
-
 /** Compares two strings through their SHA-256 digests so timing does not leak the secret. */
 function secureEquals_(left, right) {
   const leftDigest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(left));

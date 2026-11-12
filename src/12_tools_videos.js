@@ -25,7 +25,7 @@ function videoMetadataProps_() {
 
 /** The account's uploads, newest first, read from its "uploads" playlist (cheap on quota). */
 function listMyUploads_(args) {
-  const channel = getChannel_(null, 'contentDetails', args.account);
+  const channel = getOwnChannel_('contentDetails', args.account);
   const uploads = ((channel.contentDetails || {}).relatedPlaylists || {}).uploads;
   if (!uploads) {
     throw createError_('This channel has no uploads playlist yet.');
@@ -73,20 +73,17 @@ function videoTools_() {
       name: 'youtube_videos_list',
       title: 'Get videos',
       description:
-        'Get details and statistics for videos by ID, the most popular chart, or videos the account rated. ' +
-        'Use youtube_videos_list_mine to enumerate a channel\'s own uploads.',
+        'Get the current title, description, tags, visibility and statistics of videos by ID. ' +
+        'Use youtube_videos_list_mine to find the IDs of a channel\'s own uploads.',
       kind: 'read',
       props: {
         id: strProp_('Video ID(s), comma-separated (max 50).'),
-        chart: strProp_('Set to mostPopular for the trending chart.', ['mostPopular']),
-        myRating: strProp_('Videos the account liked or disliked.', ['like', 'dislike']),
-        regionCode: strProp_('ISO country code for the chart.'),
-        videoCategoryId: strProp_('Restrict the chart to one category.'),
-        ...listProps_(VIDEO_PARTS, 50),
+        part: strProp_('Resource parts to return, comma-separated. Default: ' + VIDEO_PARTS + '.'),
+        fields: strProp_('Partial-response selector to shrink the result, e.g. "items(id,snippet/title)".'),
       },
+      required: ['id'],
       request: function (a) {
-        const filter = pick_(a, ['id', 'chart', 'myRating', 'regionCode', 'videoCategoryId']);
-        return { path: '/videos', query: listQuery_(a, VIDEO_PARTS, filter) };
+        return { path: '/videos', query: { part: a.part || VIDEO_PARTS, fields: a.fields, id: a.id } };
       },
     }),
     defineTool_({
@@ -147,28 +144,6 @@ function videoTools_() {
       required: ['videoId'],
       request: function (a) {
         return { method: 'DELETE', path: '/videos', query: { id: a.videoId } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_videos_rate',
-      title: 'Like or dislike a video',
-      description: 'Like, dislike, or clear the account\'s rating on a video.',
-      kind: 'write',
-      props: { videoId: videoIdProp, rating: strProp_('Rating to apply.', ['like', 'dislike', 'none']) },
-      required: ['videoId', 'rating'],
-      request: function (a) {
-        return { method: 'POST', path: '/videos/rate', query: { id: a.videoId, rating: a.rating } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_videos_get_rating',
-      title: 'Get my rating of videos',
-      description: 'Check whether the account liked or disliked the given videos.',
-      kind: 'read',
-      props: { videoId: strProp_('Video ID(s), comma-separated.') },
-      required: ['videoId'],
-      request: function (a) {
-        return { path: '/videos/getRating', query: { id: a.videoId } };
       },
     }),
     defineTool_({

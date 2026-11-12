@@ -21,14 +21,12 @@ function bodyOf(call) {
   return JSON.parse(call.options.payload);
 }
 
-/** A resource rich enough for every read-merge-write handler. */
-const ITEM = {
+const VIDEO = {
   id: 'ID1',
-  snippet: { title: 'Old title', description: 'Old description', categoryId: '10', tags: ['a'], scheduledStartTime: '2030-01-01T00:00:00Z', thumbnails: {} },
+  snippet: { title: 'Old title', description: 'Old description', categoryId: '10', tags: ['a'], thumbnails: {} },
   status: { privacyStatus: 'private', uploadStatus: 'processed' },
-  contentDetails: { relatedPlaylists: { uploads: 'UU1' } },
-  brandingSettings: { channel: { title: 'Chan', description: 'Old' }, image: { bannerExternalUrl: 'old' } },
 };
+const CHANNEL = { id: 'UC1', contentDetails: { relatedPlaylists: { uploads: 'UU1' } } };
 
 function withConnectedAccount(gas) {
   gas.props.set('OAUTH_CLIENT_ID', 'cid');
@@ -38,76 +36,36 @@ function withConnectedAccount(gas) {
   return gas;
 }
 
-const SPECIAL_ARGS = {
-  youtube_accounts_connect: { alias: 'third' },
-  youtube_accounts_remove: { alias: 'second' },
-  youtube_accounts_set_default: { alias: 'second' },
-  youtube_channels_update: { description: 'New' },
-  youtube_channel_banner_set: { url: 'https://img.test/banner.png' },
-  youtube_watermark_set: { driveFileId: 'drive-file-id-1' },
-  youtube_thumbnails_set: { videoId: 'v1', url: 'https://img.test/t.png' },
-  youtube_videos_update: { videoId: 'ID1', title: 'New' },
-  youtube_playlists_update: { playlistId: 'ID1', privacyStatus: 'public' },
-  youtube_live_broadcasts_update: { broadcastId: 'ID1', title: 'New' },
-  youtube_comment_threads_list: { videoId: 'v1' },
-  youtube_comments_list: { parentId: 'c1' },
-  youtube_captions_update: { captionId: 'cap1', isDraft: true },
-  youtube_videos_rate: { videoId: 'v1', rating: 'like' },
-  youtube_comments_set_moderation_status: { commentId: 'c1', moderationStatus: 'rejected' },
-  youtube_live_broadcasts_transition: { broadcastId: 'b1', broadcastStatus: 'live' },
-  youtube_api_request: { path: '/activities', query: { part: 'snippet', mine: true } },
-};
-const UPLOAD_TOOLS = ['youtube_videos_upload', 'youtube_videos_upload_continue'];
-
-function dummyArgs(tool) {
-  const fill = (name) => {
-    const prop = tool.inputSchema.properties[name];
-    if (prop.enum) return prop.enum[0];
-    if (prop.type === 'integer') return prop.minimum || 1;
-    return prop.type === 'boolean' ? true : 'value-' + name;
-  };
-  return Object.fromEntries(tool.inputSchema.required.map((name) => [name, fill(name)]));
-}
-
-test('every tool runs against a generic API reply and targets a Google API host', () => {
-  app
-    .allTools_()
-    .filter((tool) => !UPLOAD_TOOLS.includes(tool.name))
-    .forEach((tool) => {
-      const gas = withConnectedAccount(installGas());
-      gas.on(() => true, response(200, { items: [ITEM], url: 'https://banner.test/x', columnHeaders: [], rows: [] }, { 'Content-Type': 'image/png' }));
-      const outcome = run(tool.name, SPECIAL_ARGS[tool.name] || dummyArgs(tool));
-      assert.equal(outcome.isError, false, tool.name + ': ' + outcome.text);
-      gas.calls
-        .filter((call) => !call.url.startsWith('https://img.test/'))
-        .forEach((call) => assert.match(call.url, /^https:\/\/(www|oauth2|youtubeanalytics|youtubereporting)\.googleapis\.com\//, tool.name));
-    });
-});
-
 test('requests carry the owner token by default', () => {
   const gas = installGas();
-  gas.on('/playlists', response(200, { items: [] }));
-  run('youtube_playlists_list');
+  gas.on('/videos', response(200, { items: [VIDEO] }));
+  run('youtube_videos_list', { id: 'ID1' });
   assert.equal(gas.calls[0].options.headers.Authorization, 'Bearer owner-token');
-  assert.deepEqual(queryOf(gas.calls[0]), { part: 'snippet,status,contentDetails', mine: 'true' });
+  assert.equal(gas.calls[0].url.split('?')[0], 'https://www.googleapis.com/youtube/v3/videos');
+  assert.deepEqual(queryOf(gas.calls[0]), { part: 'snippet,contentDetails,statistics,status', id: 'ID1' });
 });
 
 test('a connected account refreshes its token once and caches it', () => {
   const gas = withConnectedAccount(installGas());
   gas.on('oauth2.googleapis.com/token', response(200, { access_token: 'second-token', expires_in: 3600 }));
-  gas.on('/playlists', response(200, { items: [] }));
-  run('youtube_playlists_list', { account: 'second' });
-  run('youtube_playlists_list', { account: 'second' });
+  gas.on('/videos', response(200, { items: [] }));
+  run('youtube_videos_list', { id: 'x', account: 'second' });
+  run('youtube_videos_list', { id: 'x', account: 'second' });
   const tokenCalls = gas.calls.filter((call) => call.url.includes('/token'));
   assert.equal(tokenCalls.length, 1);
   assert.equal(tokenCalls[0].options.payload.refresh_token, 'rt');
   assert.equal(gas.calls[2].options.headers.Authorization, 'Bearer second-token');
 });
 
+test('a rejected refresh token tells the user to reconnect', () => {
+  const gas = withConnectedAccount(installGas());
+  gas.on('oauth2.googleapis.com/token', response(400, { error: 'invalid_grant', error_description: 'Token has been revoked' }));
+  assert.match(run('youtube_videos_list', { id: 'x', account: 'second' }).text, /Token has been revoked.*|reconnect/);
+});
+
 test('an unknown account is rejected before any request is sent', () => {
   const gas = installGas();
-  const outcome = run('youtube_playlists_list', { account: 'ghost' });
-  assert.equal(outcome.isError, true);
+  assert.equal(run('youtube_videos_list', { id: 'x', account: 'ghost' }).isError, true);
   assert.equal(gas.calls.length, 0);
 });
 
@@ -116,12 +74,13 @@ test('accounts_list never exposes refresh tokens', () => {
   const outcome = run('youtube_accounts_list');
   assert.doesNotMatch(outcome.text, /"rt"|refreshToken/);
   assert.deepEqual(outcome.data.accounts.map((account) => account.alias), ['owner', 'second']);
+  assert.equal(outcome.data.oauthClientConfigured, true);
 });
 
 test('removing the default account revokes it and falls back to owner', () => {
   const gas = withConnectedAccount(installGas());
   gas.on('/revoke', response(200, {}));
-  run('youtube_accounts_set_default', { alias: 'second' });
+  assert.deepEqual(run('youtube_accounts_set_default', { alias: 'second' }).data, { defaultAccount: 'second' });
   const outcome = run('youtube_accounts_remove', { alias: 'second' });
   assert.deepEqual(outcome.data, { removed: 'second', tokenRevoked: true, defaultAccount: 'owner' });
   assert.equal(gas.props.has('YT_ACCOUNT_second'), false);
@@ -134,6 +93,12 @@ test('connect needs an OAuth client and rejects the reserved alias', () => {
   withConnectedAccount(installGas());
   assert.equal(run('youtube_accounts_connect', { alias: 'owner' }).isError, true);
   assert.equal(run('youtube_accounts_connect', { alias: 'bad alias!' }).isError, true);
+});
+
+test('connect fails clearly when the web app URL is unknown', () => {
+  const gas = withConnectedAccount(installGas());
+  gas.props.delete('WEBAPP_URL');
+  assert.match(run('youtube_accounts_connect', { alias: 'x' }).text, /web app URL is unknown/);
 });
 
 test('OAuth round trip stores the channel and the state is single-use', () => {
@@ -152,19 +117,24 @@ test('OAuth round trip stores the channel and the state is single-use', () => {
   assert.match(app.doGet({ parameter: params }).html, /Link expired/);
 });
 
-test('OAuth callback rejects forged state, denial and a missing refresh token', () => {
+test('OAuth callback rejects forged state, denial, a missing refresh token and channel-less accounts', () => {
   const gas = withConnectedAccount(installGas());
   assert.match(app.doGet({ parameter: { state: 'forged-state-value-000', code: 'c' } }).html, /Link expired/);
   const stateOf = () => new URL(run('youtube_accounts_connect', { alias: 'brand' }).data.authUrl).searchParams.get('state');
   assert.match(app.doGet({ parameter: { state: stateOf(), error: 'access_denied' } }).html, /access_denied/);
-  gas.on('oauth2.googleapis.com/token', response(200, { access_token: 'at' }));
+
+  let tokens = { access_token: 'at' };
+  gas.on('oauth2.googleapis.com/token', () => response(200, tokens));
+  gas.on('/channels', response(200, { items: [] }));
   assert.match(app.doGet({ parameter: { state: stateOf(), code: 'c' } }).html, /refresh token/);
+  tokens = { access_token: 'at', refresh_token: 'rt2' };
+  assert.match(app.doGet({ parameter: { state: stateOf(), code: 'c' } }).html, /no YouTube channel/);
   assert.equal(gas.props.has('YT_ACCOUNT_brand'), false);
 });
 
 test('video update merges changes into the existing mutable fields only', () => {
   const gas = installGas();
-  gas.on((call) => call.options.method === 'get', response(200, { items: [ITEM] }));
+  gas.on((call) => call.options.method === 'get', response(200, { items: [VIDEO] }));
   gas.on((call) => call.options.method === 'put', response(200, { id: 'ID1' }));
   run('youtube_videos_update', { videoId: 'ID1', title: 'New title', privacyStatus: 'public' });
   const put = gas.calls[1];
@@ -176,78 +146,75 @@ test('video update merges changes into the existing mutable fields only', () => 
   });
 });
 
+test('a status-only update leaves the snippet untouched', () => {
+  const gas = installGas();
+  gas.on((call) => call.options.method === 'get', response(200, { items: [VIDEO] }));
+  gas.on((call) => call.options.method === 'put', response(200, { id: 'ID1' }));
+  run('youtube_videos_update', { videoId: 'ID1', publishAt: '2030-01-01T00:00:00Z' });
+  assert.equal(queryOf(gas.calls[0]).part, 'status');
+  assert.deepEqual(bodyOf(gas.calls[1]), { id: 'ID1', status: { privacyStatus: 'private', publishAt: '2030-01-01T00:00:00Z' } });
+});
+
 test('video update with nothing to change fails without calling the API', () => {
   const gas = installGas();
   assert.match(run('youtube_videos_update', { videoId: 'ID1' }).text, /at least one field/);
   assert.equal(gas.calls.length, 0);
 });
 
-test('a missing resource gives a clear not-found error', () => {
+test('a missing video gives a clear not-found error', () => {
   const gas = installGas();
   gas.on('/videos', response(200, { items: [] }));
   assert.match(run('youtube_videos_update', { videoId: 'gone', title: 'x' }).text, /Video "gone" was not found/);
 });
 
-test('channel update keeps the other branding settings', () => {
+test('delete sends a DELETE and reports success for an empty reply', () => {
   const gas = installGas();
-  gas.on((call) => call.options.method === 'get', response(200, { items: [ITEM] }));
-  gas.on((call) => call.options.method === 'put', response(200, {}));
-  run('youtube_channels_update', { description: 'New', selfDeclaredMadeForKids: false });
-  const put = gas.calls[1];
-  assert.equal(queryOf(put).part, 'brandingSettings,status');
-  assert.deepEqual(bodyOf(put).brandingSettings, { channel: { title: 'Chan', description: 'New' }, image: { bannerExternalUrl: 'old' } });
-  assert.deepEqual(bodyOf(put).status, { selfDeclaredMadeForKids: false });
-});
-
-test('posting a comment and moderating build the documented requests', () => {
-  const gas = installGas();
-  gas.on(() => true, response(204, ''));
-  run('youtube_comments_post', { videoId: 'v1', text: 'Nice' });
-  assert.deepEqual(bodyOf(gas.calls[0]), { snippet: { videoId: 'v1', topLevelComment: { snippet: { textOriginal: 'Nice' } } } });
-  const moderated = run('youtube_comments_set_moderation_status', { commentId: 'c1,c2', moderationStatus: 'rejected', banAuthor: true });
-  assert.deepEqual(moderated.data, { success: true });
-  assert.deepEqual(queryOf(gas.calls[1]), { id: 'c1,c2', moderationStatus: 'rejected', banAuthor: 'true' });
+  gas.on('/videos', response(204, ''));
+  assert.deepEqual(run('youtube_videos_delete', { videoId: 'ID1' }).data, { success: true });
+  assert.equal(gas.calls[0].options.method, 'delete');
+  assert.deepEqual(queryOf(gas.calls[0]), { id: 'ID1' });
 });
 
 test('list_mine reads the uploads playlist', () => {
   const gas = installGas();
-  gas.on('/channels', response(200, { items: [ITEM] }));
+  gas.on('/channels', response(200, { items: [CHANNEL] }));
   gas.on('/playlistItems', response(200, { items: [] }));
   run('youtube_videos_list_mine', { maxResults: 5 });
   assert.deepEqual(queryOf(gas.calls[1]), { part: 'snippet,contentDetails,status', maxResults: '5', playlistId: 'UU1' });
 });
 
-test('analytics defaults to channel totals and returns rows as objects', () => {
+test('list_mine explains an account without a channel', () => {
   const gas = installGas();
-  gas.on('youtubeanalytics', response(200, { columnHeaders: [{ name: 'day' }, { name: 'views' }], rows: [['2026-01-01', 5]] }));
-  const outcome = run('youtube_analytics_query', { dimensions: 'day', startDate: '2026-01-01', endDate: '2026-01-02' });
-  assert.deepEqual(outcome.data.rows, [{ day: '2026-01-01', views: 5 }]);
-  assert.equal(queryOf(gas.calls[0]).ids, 'channel==MINE');
+  gas.on('/channels', response(200, { items: [] }));
+  assert.match(run('youtube_videos_list_mine').text, /no YouTube channel/);
 });
 
-test('caption download returns raw text; caption upload is multipart', () => {
+test('categories default to the US region', () => {
   const gas = installGas();
-  gas.on('/captions/cap1', response(200, '1\n00:00:01,000 --> 00:00:02,000\nHi'));
-  gas.on('/upload/youtube/v3/captions', response(200, { id: 'cap2' }));
-  assert.match(run('youtube_captions_download', { captionId: 'cap1' }).data.content, /Hi$/);
-  run('youtube_captions_upload', { videoId: 'v1', language: 'en', content: 'WEBVTT' });
+  gas.on('/videoCategories', response(200, { items: [] }));
+  run('youtube_video_categories_list');
+  assert.deepEqual(queryOf(gas.calls[0]), { part: 'snippet', regionCode: 'US' });
+});
+
+test('thumbnail upload sends the image bytes with their type', () => {
+  const gas = installGas();
+  gas.on('img.test', response(200, Buffer.from([1, 2, 3]), { 'content-type': 'image/png; charset=binary' }));
+  gas.on('/upload/youtube/v3/thumbnails/set', response(200, { items: [] }));
+  assert.equal(run('youtube_thumbnails_set', { videoId: 'v1', url: 'https://img.test/t.png' }).isError, false);
   const upload = gas.calls[1];
-  assert.match(upload.options.contentType, /^multipart\/related; boundary=/);
-  const sent = Buffer.from(upload.options.payload).toString('utf8');
-  assert.match(sent, /"language":"en"/);
-  assert.match(sent, /WEBVTT\r\n--ytmcp[0-9a-f]+--$/);
+  assert.deepEqual(queryOf(upload), { videoId: 'v1', uploadType: 'media' });
+  assert.equal(upload.options.contentType, 'image/png');
+  assert.deepEqual(upload.options.payload, [1, 2, 3]);
+  assert.equal(gas.calls[0].options.headers.Authorization, undefined);
 });
 
-test('generic request validates the path and the API name', () => {
+test('a Drive thumbnail is read with the owner token', () => {
   const gas = installGas();
-  gas.on('/activities', response(200, { items: [] }));
-  assert.equal(run('youtube_api_request', { path: '/activities', query: { part: 'snippet', mine: true } }).isError, false);
-  assert.equal(gas.calls[0].url, 'https://www.googleapis.com/youtube/v3/activities?part=snippet&mine=true');
-  ['https://evil.test/x', '/../oauth2/v1', '/a?b=1', '//evil.test'].forEach((path) => {
-    assert.equal(run('youtube_api_request', { path }).isError, true, path);
-  });
-  assert.equal(run('youtube_api_request', { path: '/x', api: 'drive' }).isError, true);
-  assert.equal(gas.calls.length, 1);
+  gas.on('/drive/v3/files/', response(200, Buffer.from([9]), { 'Content-Type': 'image/jpeg' }));
+  gas.on('/thumbnails/set', response(200, {}));
+  run('youtube_thumbnails_set', { videoId: 'v1', driveFileId: 'drive-file-id-1' });
+  assert.match(gas.calls[0].url, /\/drive\/v3\/files\/drive-file-id-1\?alt=media/);
+  assert.equal(gas.calls[0].options.headers.Authorization, 'Bearer owner-token');
 });
 
 test('media sources must be exactly one of a Drive ID or an https URL', () => {
@@ -257,8 +224,10 @@ test('media sources must be exactly one of a Drive ID or an https URL', () => {
   assert.match(run('youtube_thumbnails_set', { videoId: 'v', driveFileId: '../x' }).text, /not a valid/);
 });
 
-test('oversized images are refused', () => {
+test('oversized or unreachable images are refused', () => {
   const gas = installGas();
-  gas.on('img.test', response(200, Buffer.alloc(app.LIMITS.MAX_THUMBNAIL_BYTES + 1), { 'content-type': 'image/png' }));
+  gas.on('img.test/big', response(200, Buffer.alloc(app.LIMITS.MAX_THUMBNAIL_BYTES + 1), { 'content-type': 'image/png' }));
+  gas.on('img.test/gone', response(404, ''));
   assert.match(run('youtube_thumbnails_set', { videoId: 'v', url: 'https://img.test/big.png' }).text, /must be between/);
+  assert.match(run('youtube_thumbnails_set', { videoId: 'v', url: 'https://img.test/gone.png' }).text, /HTTP 404/);
 });

@@ -1,12 +1,19 @@
 # YouTube MCP for Google Apps Script
 
-An MCP server that runs as a Google Apps Script web app and controls YouTube
-channels: videos, uploads, playlists, comments, captions, live streams,
-subscriptions, memberships, channel branding and analytics. No server to host.
+An MCP server that runs as a Google Apps Script web app and uploads and edits
+YouTube videos. No server to host.
 
-- 62 tools, plus `youtube_api_request` for any endpoint without a dedicated tool
-- Works with the account that deploys it, and with any other channel you connect through OAuth
-- Chunked video upload from Google Drive or an https URL
+| Tool | What it does |
+| --- | --- |
+| `youtube_videos_upload`, `youtube_videos_upload_continue` | Chunked upload from Google Drive or an https URL |
+| `youtube_videos_update` | Change title, description, tags, category, visibility, schedule and other settings |
+| `youtube_thumbnails_set` | Set a custom thumbnail |
+| `youtube_videos_delete` | Delete a video |
+| `youtube_videos_list`, `youtube_videos_list_mine` | Read video details; list a channel's own uploads |
+| `youtube_video_categories_list` | Look up category IDs |
+| `youtube_accounts_list`, `_connect`, `_remove`, `_set_default` | Choose which channel to act as |
+
+It works with the account that deploys it, and with any other channel you connect through OAuth.
 
 ## Deploy
 
@@ -40,7 +47,7 @@ The client must follow HTTP redirects, because Apps Script answers every POST wi
 
 The `owner` account (whoever deployed the script) works immediately, on that Google account's own channel. To act as any other channel, including brand channels:
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable **YouTube Data API v3**, **YouTube Analytics API** and **YouTube Reporting API**.
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and enable **YouTube Data API v3**.
 2. Configure the OAuth consent screen and add the channel owners as test users (or publish the app).
 3. Create an **OAuth client ID** of type **Web application** whose **Authorized redirect URI** is your `/exec` URL.
 4. In the Apps Script editor, open **Project Settings > Script Properties** and add `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET`.
@@ -68,11 +75,10 @@ While the consent screen is in **Testing** mode, Google expires refresh tokens a
 
 ## Limits
 
-- **Not in any public API**, so not available here: community posts, end screens and cards, monetisation settings, copyright claims (Content ID is partner-only), hearting or pinning comments, the Studio video editor, changing the channel name or handle.
-- **Quota**: the Data API allows 10,000 units a day by default. Searches and uploads are expensive.
+- **Not in any public API**, so not possible: end screens and cards, monetisation settings, trimming or blurring in the Studio editor.
+- **Quota**: the Data API allows 10,000 units a day by default, and uploads are expensive.
 - **Apps Script**: a call may run for at most 6 minutes, and request headers are not readable, which is why the key is in the URL. Treat the endpoint URL as a password.
 - **Security**: anyone with the endpoint URL controls every connected channel. Refresh tokens sit in Script Properties, visible to editors of the script project, so do not share the project.
-- The YouTube Reporting API has no Apps Script advanced service; for the `owner` account it needs the script linked to a standard Cloud project with that API enabled.
 
 ## Development
 

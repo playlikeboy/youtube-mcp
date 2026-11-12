@@ -14,20 +14,13 @@ const SERVER_INFO = Object.freeze({
 const SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 
 const SERVER_INSTRUCTIONS = [
-  'Controls YouTube channels through the YouTube Data, Analytics and Reporting APIs.',
+  'Uploads and edits YouTube videos through the YouTube Data API.',
   'Every tool takes an optional "account" alias; omit it to use the default account (see youtube_accounts_list).',
   'Connect more channels with youtube_accounts_connect.',
-  'List tools accept "part", "fields", "maxResults" and "pageToken"; pass "fields" to keep responses small.',
   'Video uploads are chunked: call youtube_videos_upload, then youtube_videos_upload_continue until status is "completed".',
-  'Anything without a dedicated tool is reachable through youtube_api_request.',
 ].join(' ');
 
-const API_BASES = Object.freeze({
-  data: 'https://www.googleapis.com/youtube/v3',
-  analytics: 'https://youtubeanalytics.googleapis.com/v2',
-  reporting: 'https://youtubereporting.googleapis.com/v1',
-});
-
+const API_BASE = 'https://www.googleapis.com/youtube/v3';
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/youtube/v3';
 const DRIVE_FILES_BASE = 'https://www.googleapis.com/drive/v3/files';
 const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -55,11 +48,7 @@ const OWNER_ACCOUNT = 'owner';
 /** Scopes requested when an extra channel is connected through OAuth. */
 const ACCOUNT_SCOPES = Object.freeze([
   'https://www.googleapis.com/auth/youtube',
-  'https://www.googleapis.com/auth/youtube.force-ssl',
   'https://www.googleapis.com/auth/youtube.upload',
-  'https://www.googleapis.com/auth/youtube.channel-memberships.creator',
-  'https://www.googleapis.com/auth/yt-analytics.readonly',
-  'https://www.googleapis.com/auth/yt-analytics-monetary.readonly',
 ]);
 
 const LIMITS = Object.freeze({
@@ -73,10 +62,7 @@ const LIMITS = Object.freeze({
   TOKEN_EXPIRY_MARGIN_S: 120,
   MAX_TOKEN_CACHE_S: 21600,
   MAX_THUMBNAIL_BYTES: 2 * 1024 * 1024,
-  MAX_BANNER_BYTES: 6 * 1024 * 1024,
-  MAX_WATERMARK_BYTES: 1024 * 1024,
   ERROR_BODY_PREVIEW_CHARS: 300,
-  DEFAULT_ANALYTICS_DAYS: 28,
 });
 
 const RPC_ERRORS = Object.freeze({
@@ -187,13 +173,6 @@ function escapeHtml_(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
-}
-
-/** YYYY-MM-DD (UTC) for the day `days` before `now`. */
-function isoDateDaysAgo_(days, now) {
-  const base = now ? new Date(now.getTime()) : new Date();
-  const millisPerDay = 24 * 60 * 60 * 1000;
-  return new Date(base.getTime() - days * millisPerDay).toISOString().slice(0, 10);
 }
 
 /** Compares two strings through their SHA-256 digests so timing does not leak the secret. */
@@ -465,13 +444,13 @@ function exchangeAuthCode_(code) {
 }
 
 function fetchOwnChannel_(accessToken) {
-  const url = API_BASES.data + '/channels' + toQueryString_({ part: 'snippet', mine: true });
+  const url = API_BASE + '/channels' + toQueryString_({ part: 'snippet', mine: true });
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
     headers: { Authorization: 'Bearer ' + accessToken },
     muteHttpExceptions: true,
   });
-  const body = parseApiResponse_(response, false);
+  const body = parseApiResponse_(response);
   const channel = (body.items || [])[0];
   if (!channel) {
     throw createError_('That Google account has no YouTube channel.');
@@ -529,15 +508,7 @@ function renderPage_(heading, detail) {
 }
 
 // ===== 04_http.js =====
-/** Thin client for the YouTube Data, Analytics and Reporting REST APIs. */
-
-function buildApiUrl_(api, path, query) {
-  const base = API_BASES[api];
-  if (!base) {
-    throw createError_('Unknown API "' + api + '". Use one of: ' + Object.keys(API_BASES).join(', ') + '.');
-  }
-  return base + path + toQueryString_(query);
-}
+/** Thin client for the YouTube Data API v3. */
 
 function authHeaders_(account) {
   return { Authorization: 'Bearer ' + getAccessToken_(account) };
@@ -545,9 +516,8 @@ function authHeaders_(account) {
 
 /**
  * Sends one API request.
- * req: { api?, method?, path, query?, body?, account?, raw? }
- * Returns the parsed JSON, { success: true } for empty responses, or
- * { content } when req.raw is set (caption downloads are not JSON).
+ * req: { method?, path, query?, body?, account? }
+ * Returns the parsed JSON, or { success: true } for empty responses.
  */
 function ytRequest_(req) {
   const hasBody = req.body !== undefined && req.body !== null;
@@ -558,12 +528,12 @@ function ytRequest_(req) {
     contentType: hasBody ? 'application/json' : undefined,
     payload: hasBody ? JSON.stringify(req.body) : undefined,
   });
-  const url = buildApiUrl_(req.api || 'data', req.path, req.query);
-  return parseApiResponse_(UrlFetchApp.fetch(url, options), req.raw === true);
+  const url = API_BASE + req.path + toQueryString_(req.query);
+  return parseApiResponse_(UrlFetchApp.fetch(url, options));
 }
 
 /**
- * Uploads media bytes (thumbnails, banners, captions, watermarks).
+ * Uploads media bytes in a single request (thumbnails).
  * req: { method?, path, query?, contentType, payload, account? }
  */
 function uploadMedia_(req) {
@@ -575,17 +545,14 @@ function uploadMedia_(req) {
     payload: req.payload,
     muteHttpExceptions: true,
   });
-  return parseApiResponse_(response, false);
+  return parseApiResponse_(response);
 }
 
-function parseApiResponse_(response, raw) {
+function parseApiResponse_(response) {
   const code = response.getResponseCode();
   const text = response.getContentText();
   if (code < 200 || code >= 300) {
     throw createError_(describeApiError_(code, text));
-  }
-  if (raw) {
-    return { content: text };
   }
   return text ? safeJsonParse_(text, { content: text }) : { success: true };
 }
@@ -615,11 +582,8 @@ function getSingleItem_(path, id, part, account, label) {
   return item;
 }
 
-/** The given channel, or the authenticated account's own channel when no id is given. */
-function getChannel_(channelId, part, account) {
-  if (channelId) {
-    return getSingleItem_('/channels', channelId, part, account, 'Channel');
-  }
+/** The authenticated account's own channel. */
+function getOwnChannel_(part, account) {
   const result = ytRequest_({ path: '/channels', query: { part: part, mine: true }, account: account });
   const channel = (result.items || [])[0];
   if (!channel) {
@@ -759,23 +723,6 @@ function fetchSourceBlob_(source, maxBytes) {
   }
   const mimeType = (findHeader_(response.getHeaders(), 'Content-Type') || 'application/octet-stream').split(';')[0];
   return { bytes: bytes, mimeType: mimeType.trim() };
-}
-
-function toBytes_(text) {
-  return Utilities.newBlob(text).getBytes();
-}
-
-/** Builds a multipart/related body: JSON metadata followed by the media bytes. */
-function buildMultipartRelated_(metadata, mediaBytes, mediaType) {
-  const boundary = 'ytmcp' + Utilities.getUuid().replace(/-/g, '');
-  const head =
-    '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) +
-    '\r\n--' + boundary + '\r\nContent-Type: ' + mediaType + '\r\n\r\n';
-  const tail = '\r\n--' + boundary + '--';
-  return {
-    contentType: 'multipart/related; boundary=' + boundary,
-    payload: toBytes_(head).concat(mediaBytes, toBytes_(tail)),
-  };
 }
 
 // ===== 06_upload.js =====
@@ -947,10 +894,6 @@ function listProp_(description) {
   return { type: 'array', items: { type: 'string' }, description: description };
 }
 
-function objProp_(description) {
-  return { type: 'object', description: description };
-}
-
 const ACCOUNT_PROP = strProp_('Alias of the connected account to act as. Omit for the default account.');
 
 const SOURCE_PROPS = Object.freeze({
@@ -1018,16 +961,7 @@ function apiTool_(spec) {
 }
 
 function allTools_() {
-  return [].concat(
-    accountTools_(),
-    channelTools_(),
-    videoTools_(),
-    playlistTools_(),
-    commentTools_(),
-    communityTools_(),
-    liveTools_(),
-    analyticsTools_()
-  );
+  return accountTools_().concat(videoTools_());
 }
 
 function findTool_(name) {
@@ -1046,7 +980,6 @@ function matchesType_(type, value) {
   if (type === 'string') return typeof value === 'string';
   if (type === 'integer') return Number.isInteger(value);
   if (type === 'boolean') return typeof value === 'boolean';
-  if (type === 'object') return isPlainObject_(value);
   if (type === 'array') {
     return Array.isArray(value) && value.every(function (item) { return typeof item === 'string'; });
   }
@@ -1145,215 +1078,7 @@ function accountTools_() {
   ];
 }
 
-// ===== 12_tools_channels.js =====
-/** Channel details, branding, sections, banner and watermark. */
-
-const CHANNEL_PARTS = 'snippet,statistics,contentDetails,status,brandingSettings';
-const CHANNEL_BRANDING_FIELDS = Object.freeze(['description', 'keywords', 'country', 'defaultLanguage', 'unsubscribedTrailer']);
-const SECTION_PARTS = 'snippet,contentDetails';
-
-function channelFilter_(args) {
-  if (args.id) return { id: args.id };
-  if (args.forHandle) return { forHandle: args.forHandle };
-  if (args.forUsername) return { forUsername: args.forUsername };
-  return { mine: true };
-}
-
-function updateChannel_(args) {
-  const changes = compact_(pick_(args, CHANNEL_BRANDING_FIELDS));
-  const setsKids = args.selfDeclaredMadeForKids !== undefined;
-  if (isEmptyObject_(changes) && !setsKids) {
-    throw createError_('Provide at least one field to change.');
-  }
-  const existing = getChannel_(args.channelId, 'brandingSettings', args.account);
-  const branding = existing.brandingSettings || {};
-  const body = {
-    id: existing.id,
-    brandingSettings: { ...branding, channel: { ...(branding.channel || {}), ...changes } },
-    ...(setsKids ? { status: { selfDeclaredMadeForKids: args.selfDeclaredMadeForKids } } : {}),
-  };
-  const part = setsKids ? 'brandingSettings,status' : 'brandingSettings';
-  return ytRequest_({ method: 'PUT', path: '/channels', query: { part: part }, body: body, account: args.account });
-}
-
-function setChannelBanner_(args) {
-  const image = fetchSourceBlob_(pickSource_(args), LIMITS.MAX_BANNER_BYTES);
-  const uploaded = uploadMedia_({
-    path: '/channelBanners/insert',
-    query: { uploadType: 'media' },
-    contentType: image.mimeType,
-    payload: image.bytes,
-    account: args.account,
-  });
-  const existing = getChannel_(args.channelId, 'brandingSettings', args.account);
-  const branding = existing.brandingSettings || {};
-  const body = {
-    id: existing.id,
-    brandingSettings: { ...branding, image: { ...(branding.image || {}), bannerExternalUrl: uploaded.url } },
-  };
-  return ytRequest_({ method: 'PUT', path: '/channels', query: { part: 'brandingSettings' }, body: body, account: args.account });
-}
-
-function setWatermark_(args) {
-  const channel = getChannel_(args.channelId, 'id', args.account);
-  const image = fetchSourceBlob_(pickSource_(args), LIMITS.MAX_WATERMARK_BYTES);
-  const metadata = {
-    timing: compact_({
-      type: args.timingType || 'offsetFromStart',
-      offsetMs: args.offsetMs === undefined ? 0 : args.offsetMs,
-      durationMs: args.durationMs,
-    }),
-    position: { type: 'corner', cornerPosition: 'topRight' },
-  };
-  const multipart = buildMultipartRelated_(metadata, image.bytes, image.mimeType);
-  return uploadMedia_({
-    path: '/watermarks/set',
-    query: { channelId: channel.id, uploadType: 'multipart' },
-    contentType: multipart.contentType,
-    payload: multipart.payload,
-    account: args.account,
-  });
-}
-
-function sectionRequest_(method, args) {
-  const details = compact_({ playlists: args.playlists, channels: args.channels });
-  const hasDetails = !isEmptyObject_(details);
-  const body = compact_({
-    id: args.sectionId,
-    snippet: compact_({ type: args.type, title: args.title, position: args.position }),
-    contentDetails: hasDetails ? details : undefined,
-  });
-  return { method: method, path: '/channelSections', query: { part: hasDetails ? SECTION_PARTS : 'snippet' }, body: body };
-}
-
-function sectionProps_() {
-  return {
-    type: strProp_('Section type, e.g. singlePlaylist, multiplePlaylists, multipleChannels, recentUploads, popularUploads.'),
-    title: strProp_('Section title (needed for multiplePlaylists / multipleChannels).'),
-    position: intProp_('Zero-based position on the channel page.', 0),
-    playlists: listProp_('Playlist IDs shown in the section.'),
-    channels: listProp_('Channel IDs shown in the section.'),
-  };
-}
-
-function channelTools_() {
-  const channelIdProp = strProp_("Channel ID. Omit for the account's own channel.");
-  return [
-    apiTool_({
-      name: 'youtube_channels_get',
-      title: 'Get channel details',
-      description:
-        "Get channel info, statistics (subscribers, views, video count) and branding. With no filter it returns the account's own channel.",
-      kind: 'read',
-      props: {
-        id: strProp_('Channel ID(s), comma-separated.'),
-        forHandle: strProp_('Channel handle, e.g. "@GoogleDevelopers".'),
-        forUsername: strProp_('Legacy YouTube username.'),
-        ...listProps_(CHANNEL_PARTS, 50),
-      },
-      request: function (a) {
-        return { path: '/channels', query: listQuery_(a, CHANNEL_PARTS, channelFilter_(a)) };
-      },
-    }),
-    defineTool_({
-      name: 'youtube_channels_update',
-      title: 'Update channel settings',
-      description:
-        'Change channel description, keywords, country, default language, trailer or made-for-kids status. Other ' +
-        'branding settings are preserved. The channel name and handle cannot be changed through the API.',
-      kind: 'write',
-      props: {
-        channelId: channelIdProp,
-        description: strProp_('Channel description.'),
-        keywords: strProp_('Space-separated channel keywords; quote multi-word keywords.'),
-        country: strProp_('ISO 3166-1 alpha-2 country code.'),
-        defaultLanguage: strProp_('BCP-47 language code.'),
-        unsubscribedTrailer: strProp_('Video ID of the trailer shown to non-subscribers.'),
-        selfDeclaredMadeForKids: boolProp_('Whether the whole channel is made for kids.'),
-      },
-      handler: updateChannel_,
-    }),
-    defineTool_({
-      name: 'youtube_channel_banner_set',
-      title: 'Set channel banner',
-      description: 'Upload an image (16:9, at least 2048x1152, max 6 MB) and set it as the channel banner.',
-      kind: 'write',
-      props: { ...SOURCE_PROPS, channelId: channelIdProp },
-      handler: setChannelBanner_,
-    }),
-    defineTool_({
-      name: 'youtube_watermark_set',
-      title: 'Set video watermark',
-      description: 'Upload a square PNG/JPG (max 1 MB) shown as the branding watermark on all of the channel\'s videos.',
-      kind: 'write',
-      props: {
-        ...SOURCE_PROPS,
-        channelId: channelIdProp,
-        timingType: strProp_('When the watermark appears. Default offsetFromStart.', ['offsetFromStart', 'offsetFromEnd']),
-        offsetMs: intProp_('Offset in milliseconds. Default 0.', 0),
-        durationMs: intProp_('How long it stays visible, in milliseconds. Omit for the rest of the video.', 0),
-      },
-      handler: setWatermark_,
-    }),
-    defineTool_({
-      name: 'youtube_watermark_unset',
-      title: 'Remove video watermark',
-      description: "Remove the channel's branding watermark.",
-      kind: 'delete',
-      props: { channelId: channelIdProp },
-      handler: function (a) {
-        const channel = getChannel_(a.channelId, 'id', a.account);
-        return ytRequest_({ method: 'POST', path: '/watermarks/unset', query: { channelId: channel.id }, account: a.account });
-      },
-    }),
-    apiTool_({
-      name: 'youtube_channel_sections_list',
-      title: 'List channel sections',
-      description: "List the shelves on a channel's home page. Defaults to the account's own channel.",
-      kind: 'read',
-      props: { channelId: strProp_('Channel ID.'), id: strProp_('Section ID(s), comma-separated.'), part: strProp_('Default: ' + SECTION_PARTS + '.') },
-      request: function (a) {
-        const filter = a.id ? { id: a.id } : a.channelId ? { channelId: a.channelId } : { mine: true };
-        return { path: '/channelSections', query: { part: a.part || SECTION_PARTS, ...filter } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_channel_sections_create',
-      title: 'Create channel section',
-      description: 'Add a shelf to the channel home page.',
-      kind: 'write',
-      props: sectionProps_(),
-      required: ['type'],
-      request: function (a) {
-        return sectionRequest_('POST', a);
-      },
-    }),
-    apiTool_({
-      name: 'youtube_channel_sections_update',
-      title: 'Update channel section',
-      description: 'Replace a shelf\'s type, title, position and contents. Send every value the section should keep.',
-      kind: 'write',
-      props: { sectionId: strProp_('Section ID.'), ...sectionProps_() },
-      required: ['sectionId', 'type'],
-      request: function (a) {
-        return sectionRequest_('PUT', a);
-      },
-    }),
-    apiTool_({
-      name: 'youtube_channel_sections_delete',
-      title: 'Delete channel section',
-      description: 'Remove a shelf from the channel home page.',
-      kind: 'delete',
-      props: { sectionId: strProp_('Section ID.') },
-      required: ['sectionId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/channelSections', query: { id: a.sectionId } };
-      },
-    }),
-  ];
-}
-
-// ===== 13_tools_videos.js =====
+// ===== 12_tools_videos.js =====
 /** Videos: list, upload, update, delete, rate, thumbnails, categories. */
 
 const VIDEO_PARTS = 'snippet,contentDetails,statistics,status';
@@ -1381,7 +1106,7 @@ function videoMetadataProps_() {
 
 /** The account's uploads, newest first, read from its "uploads" playlist (cheap on quota). */
 function listMyUploads_(args) {
-  const channel = getChannel_(null, 'contentDetails', args.account);
+  const channel = getOwnChannel_('contentDetails', args.account);
   const uploads = ((channel.contentDetails || {}).relatedPlaylists || {}).uploads;
   if (!uploads) {
     throw createError_('This channel has no uploads playlist yet.');
@@ -1429,20 +1154,17 @@ function videoTools_() {
       name: 'youtube_videos_list',
       title: 'Get videos',
       description:
-        'Get details and statistics for videos by ID, the most popular chart, or videos the account rated. ' +
-        'Use youtube_videos_list_mine to enumerate a channel\'s own uploads.',
+        'Get the current title, description, tags, visibility and statistics of videos by ID. ' +
+        'Use youtube_videos_list_mine to find the IDs of a channel\'s own uploads.',
       kind: 'read',
       props: {
         id: strProp_('Video ID(s), comma-separated (max 50).'),
-        chart: strProp_('Set to mostPopular for the trending chart.', ['mostPopular']),
-        myRating: strProp_('Videos the account liked or disliked.', ['like', 'dislike']),
-        regionCode: strProp_('ISO country code for the chart.'),
-        videoCategoryId: strProp_('Restrict the chart to one category.'),
-        ...listProps_(VIDEO_PARTS, 50),
+        part: strProp_('Resource parts to return, comma-separated. Default: ' + VIDEO_PARTS + '.'),
+        fields: strProp_('Partial-response selector to shrink the result, e.g. "items(id,snippet/title)".'),
       },
+      required: ['id'],
       request: function (a) {
-        const filter = pick_(a, ['id', 'chart', 'myRating', 'regionCode', 'videoCategoryId']);
-        return { path: '/videos', query: listQuery_(a, VIDEO_PARTS, filter) };
+        return { path: '/videos', query: { part: a.part || VIDEO_PARTS, fields: a.fields, id: a.id } };
       },
     }),
     defineTool_({
@@ -1505,28 +1227,6 @@ function videoTools_() {
         return { method: 'DELETE', path: '/videos', query: { id: a.videoId } };
       },
     }),
-    apiTool_({
-      name: 'youtube_videos_rate',
-      title: 'Like or dislike a video',
-      description: 'Like, dislike, or clear the account\'s rating on a video.',
-      kind: 'write',
-      props: { videoId: videoIdProp, rating: strProp_('Rating to apply.', ['like', 'dislike', 'none']) },
-      required: ['videoId', 'rating'],
-      request: function (a) {
-        return { method: 'POST', path: '/videos/rate', query: { id: a.videoId, rating: a.rating } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_videos_get_rating',
-      title: 'Get my rating of videos',
-      description: 'Check whether the account liked or disliked the given videos.',
-      kind: 'read',
-      props: { videoId: strProp_('Video ID(s), comma-separated.') },
-      required: ['videoId'],
-      request: function (a) {
-        return { path: '/videos/getRating', query: { id: a.videoId } };
-      },
-    }),
     defineTool_({
       name: 'youtube_thumbnails_set',
       title: 'Set video thumbnail',
@@ -1545,825 +1245,6 @@ function videoTools_() {
       request: function (a) {
         return { path: '/videoCategories', query: { part: 'snippet', regionCode: a.regionCode || 'US' } };
       },
-    }),
-  ];
-}
-
-// ===== 14_tools_playlists.js =====
-/** Playlists and the videos inside them. */
-
-const PLAYLIST_PARTS = 'snippet,status,contentDetails';
-const PLAYLIST_ITEM_PARTS = 'snippet,contentDetails,status';
-
-function playlistItemBody_(args) {
-  return compact_({
-    id: args.playlistItemId,
-    snippet: compact_({
-      playlistId: args.playlistId,
-      position: args.position,
-      resourceId: { kind: 'youtube#video', videoId: args.videoId },
-    }),
-  });
-}
-
-function playlistTools_() {
-  const playlistIdProp = strProp_('Playlist ID.');
-  const positionProp = intProp_('Zero-based position in the playlist.', 0);
-  return [
-    apiTool_({
-      name: 'youtube_playlists_list',
-      title: 'List playlists',
-      description: "List playlists by ID or channel. With no filter it returns the account's own playlists.",
-      kind: 'read',
-      props: { id: strProp_('Playlist ID(s), comma-separated.'), channelId: strProp_('Channel ID.'), ...listProps_(PLAYLIST_PARTS, 50) },
-      request: function (a) {
-        const filter = a.id ? { id: a.id } : a.channelId ? { channelId: a.channelId } : { mine: true };
-        return { path: '/playlists', query: listQuery_(a, PLAYLIST_PARTS, filter) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_playlists_create',
-      title: 'Create a playlist',
-      description: 'Create a new playlist on the account\'s channel.',
-      kind: 'write',
-      props: {
-        title: strProp_('Playlist title.'),
-        description: strProp_('Playlist description.'),
-        privacyStatus: strProp_('Visibility. Default private.', PRIVACY_VALUES),
-        defaultLanguage: strProp_('BCP-47 language code.'),
-      },
-      required: ['title'],
-      request: function (a) {
-        const body = {
-          snippet: compact_(pick_(a, ['title', 'description', 'defaultLanguage'])),
-          status: { privacyStatus: a.privacyStatus || 'private' },
-        };
-        return { method: 'POST', path: '/playlists', query: { part: 'snippet,status' }, body: body };
-      },
-    }),
-    defineTool_({
-      name: 'youtube_playlists_update',
-      title: 'Update a playlist',
-      description: 'Change a playlist\'s title, description, language or visibility. Fields you omit are preserved.',
-      kind: 'write',
-      props: {
-        playlistId: playlistIdProp,
-        title: strProp_('Playlist title.'),
-        description: strProp_('Playlist description.'),
-        defaultLanguage: strProp_('BCP-47 language code.'),
-        privacyStatus: strProp_('Visibility.', PRIVACY_VALUES),
-      },
-      required: ['playlistId'],
-      handler: function (a) {
-        return mergeUpdate_({
-          path: '/playlists',
-          id: a.playlistId,
-          account: a.account,
-          label: 'Playlist',
-          parts: {
-            snippet: partChanges_(a, ['title', 'description', 'defaultLanguage']),
-            status: partChanges_(a, ['privacyStatus']),
-          },
-        });
-      },
-    }),
-    apiTool_({
-      name: 'youtube_playlists_delete',
-      title: 'Delete a playlist',
-      description: 'Permanently delete a playlist. The videos themselves are not deleted.',
-      kind: 'delete',
-      props: { playlistId: playlistIdProp },
-      required: ['playlistId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/playlists', query: { id: a.playlistId } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_playlist_items_list',
-      title: 'List videos in a playlist',
-      description: 'List the videos in a playlist, in order. Each item has its own playlistItemId, needed to move or remove it.',
-      kind: 'read',
-      props: { playlistId: playlistIdProp, ...listProps_(PLAYLIST_ITEM_PARTS, 50) },
-      required: ['playlistId'],
-      request: function (a) {
-        return { path: '/playlistItems', query: listQuery_(a, PLAYLIST_ITEM_PARTS, { playlistId: a.playlistId }) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_playlist_items_add',
-      title: 'Add a video to a playlist',
-      description: 'Add a video to a playlist, optionally at a given position.',
-      kind: 'write',
-      props: { playlistId: playlistIdProp, videoId: strProp_('Video ID.'), position: positionProp },
-      required: ['playlistId', 'videoId'],
-      request: function (a) {
-        return { method: 'POST', path: '/playlistItems', query: { part: 'snippet' }, body: playlistItemBody_(a) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_playlist_items_move',
-      title: 'Move a video within a playlist',
-      description: 'Change the position of an item in a playlist.',
-      kind: 'write',
-      props: {
-        playlistItemId: strProp_('Playlist item ID (from youtube_playlist_items_list).'),
-        playlistId: playlistIdProp,
-        videoId: strProp_('Video ID of that item.'),
-        position: positionProp,
-      },
-      required: ['playlistItemId', 'playlistId', 'videoId', 'position'],
-      request: function (a) {
-        return { method: 'PUT', path: '/playlistItems', query: { part: 'snippet' }, body: playlistItemBody_(a) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_playlist_items_remove',
-      title: 'Remove a video from a playlist',
-      description: 'Remove an item from a playlist. The video itself is not deleted.',
-      kind: 'delete',
-      props: { playlistItemId: strProp_('Playlist item ID (from youtube_playlist_items_list).') },
-      required: ['playlistItemId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/playlistItems', query: { id: a.playlistItemId } };
-      },
-    }),
-  ];
-}
-
-// ===== 15_tools_comments.js =====
-/** Comments: read, post, reply, edit, delete and moderate. */
-
-const THREAD_PARTS = 'snippet,replies';
-
-function threadFilter_(args) {
-  if (args.id) return { id: args.id };
-  if (args.videoId) return { videoId: args.videoId };
-  if (args.channelId) return { allThreadsRelatedToChannelId: args.channelId };
-  throw createError_('Provide "videoId", "channelId" or "id".');
-}
-
-function commentTools_() {
-  const commentIdProp = strProp_('Comment ID.');
-  const textProp = strProp_('Comment text.');
-  return [
-    apiTool_({
-      name: 'youtube_comment_threads_list',
-      title: 'List comments',
-      description:
-        'List top-level comments (with their first replies) on a video, or across a whole channel. Use ' +
-        'moderationStatus "heldForReview" to see comments waiting for approval on your own videos.',
-      kind: 'read',
-      props: {
-        videoId: strProp_('Video ID.'),
-        channelId: strProp_('Channel ID: returns comments on all of its videos.'),
-        id: strProp_('Comment thread ID(s), comma-separated.'),
-        order: strProp_('Sort order. Default time.', ['time', 'relevance']),
-        searchTerms: strProp_('Only comments containing these words.'),
-        moderationStatus: strProp_('Default published.', ['published', 'heldForReview', 'likelySpam']),
-        ...listProps_(THREAD_PARTS, 100),
-      },
-      request: function (a) {
-        const extra = { ...threadFilter_(a), ...pick_(a, ['order', 'searchTerms', 'moderationStatus']), textFormat: 'plainText' };
-        return { path: '/commentThreads', query: listQuery_(a, THREAD_PARTS, extra) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_comments_list',
-      title: 'List replies',
-      description: 'List all replies to a comment, or fetch specific comments by ID.',
-      kind: 'read',
-      props: {
-        parentId: strProp_('ID of the top-level comment whose replies to list.'),
-        id: strProp_('Comment ID(s), comma-separated.'),
-        ...listProps_('snippet', 100),
-      },
-      request: function (a) {
-        if (!a.parentId && !a.id) {
-          throw createError_('Provide "parentId" or "id".');
-        }
-        const filter = a.id ? { id: a.id } : { parentId: a.parentId };
-        return { path: '/comments', query: listQuery_(a, 'snippet', { ...filter, textFormat: 'plainText' }) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_comments_post',
-      title: 'Post a comment',
-      description: 'Post a new top-level comment on a video as the account\'s channel.',
-      kind: 'write',
-      props: { videoId: strProp_('Video ID.'), text: textProp },
-      required: ['videoId', 'text'],
-      request: function (a) {
-        const body = { snippet: { videoId: a.videoId, topLevelComment: { snippet: { textOriginal: a.text } } } };
-        return { method: 'POST', path: '/commentThreads', query: { part: 'snippet' }, body: body };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_comments_reply',
-      title: 'Reply to a comment',
-      description: 'Reply to a top-level comment.',
-      kind: 'write',
-      props: { parentId: strProp_('ID of the top-level comment to reply to.'), text: textProp },
-      required: ['parentId', 'text'],
-      request: function (a) {
-        const body = { snippet: { parentId: a.parentId, textOriginal: a.text } };
-        return { method: 'POST', path: '/comments', query: { part: 'snippet' }, body: body };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_comments_update',
-      title: 'Edit a comment',
-      description: 'Edit the text of a comment written by the account.',
-      kind: 'write',
-      props: { commentId: commentIdProp, text: textProp },
-      required: ['commentId', 'text'],
-      request: function (a) {
-        const body = { id: a.commentId, snippet: { textOriginal: a.text } };
-        return { method: 'PUT', path: '/comments', query: { part: 'snippet' }, body: body };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_comments_delete',
-      title: 'Delete a comment',
-      description: 'Permanently delete a comment the account wrote, or one on the account\'s own videos.',
-      kind: 'delete',
-      props: { commentId: commentIdProp },
-      required: ['commentId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/comments', query: { id: a.commentId } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_comments_set_moderation_status',
-      title: 'Moderate comments',
-      description:
-        'Approve (published), hold (heldForReview) or reject comments on the account\'s own videos. banAuthor ' +
-        'also blocks the author from commenting and only applies when rejecting.',
-      kind: 'write',
-      props: {
-        commentId: strProp_('Comment ID(s), comma-separated.'),
-        moderationStatus: strProp_('New status.', ['published', 'heldForReview', 'rejected']),
-        banAuthor: boolProp_('Also ban the author from the channel. Only with "rejected".'),
-      },
-      required: ['commentId', 'moderationStatus'],
-      request: function (a) {
-        const query = { id: a.commentId, moderationStatus: a.moderationStatus, banAuthor: a.banAuthor };
-        return { method: 'POST', path: '/comments/setModerationStatus', query: query };
-      },
-    }),
-  ];
-}
-
-// ===== 16_tools_community.js =====
-/** Search, subscriptions, captions and channel memberships. */
-
-const SUBSCRIPTION_PARTS = 'snippet,contentDetails';
-const SEARCH_FILTERS = Object.freeze([
-  'q', 'type', 'channelId', 'order', 'publishedAfter', 'publishedBefore', 'regionCode', 'relevanceLanguage',
-  'videoDuration', 'eventType', 'safeSearch',
-]);
-
-function subscriptionFilter_(args) {
-  if (args.mySubscribers) return { mySubscribers: true };
-  if (args.channelId) return { channelId: args.channelId };
-  return { mine: true };
-}
-
-function uploadCaption_(method, metadata, args) {
-  const multipart = buildMultipartRelated_(metadata, toBytes_(args.content), 'application/octet-stream');
-  return uploadMedia_({
-    method: method,
-    path: '/captions',
-    query: { part: 'snippet', uploadType: 'multipart' },
-    contentType: multipart.contentType,
-    payload: multipart.payload,
-    account: args.account,
-  });
-}
-
-function updateCaption_(args) {
-  const snippet = compact_({ isDraft: args.isDraft });
-  if (args.content === undefined && isEmptyObject_(snippet)) {
-    throw createError_('Provide "content" and/or "isDraft".');
-  }
-  const metadata = { id: args.captionId, snippet: snippet };
-  if (args.content !== undefined) {
-    return uploadCaption_('PUT', metadata, args);
-  }
-  return ytRequest_({ method: 'PUT', path: '/captions', query: { part: 'snippet' }, body: metadata, account: args.account });
-}
-
-function searchTools_() {
-  return [
-    apiTool_({
-      name: 'youtube_search',
-      title: 'Search YouTube',
-      description:
-        'Search videos, channels and playlists across YouTube, or within one channel. Set forMine to search the ' +
-        "account's own videos, including private ones. Costs 100 quota units per call, so prefer the list tools when possible.",
-      kind: 'read',
-      props: {
-        q: strProp_('Search query.'),
-        type: strProp_('Result types, comma-separated: video, channel, playlist.'),
-        channelId: strProp_('Only results from this channel.'),
-        forMine: boolProp_("Only the account's own videos."),
-        order: strProp_('Sort order.', ['relevance', 'date', 'viewCount', 'rating', 'title', 'videoCount']),
-        publishedAfter: strProp_('ISO 8601 lower bound.'),
-        publishedBefore: strProp_('ISO 8601 upper bound.'),
-        regionCode: strProp_('ISO country code.'),
-        relevanceLanguage: strProp_('ISO 639-1 language code.'),
-        videoDuration: strProp_('Requires type=video.', ['any', 'short', 'medium', 'long']),
-        eventType: strProp_('Live filter; requires type=video.', ['live', 'upcoming', 'completed']),
-        safeSearch: strProp_('Content filter.', ['none', 'moderate', 'strict']),
-        ...listProps_('snippet', 50),
-      },
-      request: function (a) {
-        const mine = a.forMine ? { forMine: true, type: 'video' } : {};
-        return { path: '/search', query: listQuery_(a, 'snippet', { ...pick_(a, SEARCH_FILTERS), ...mine }) };
-      },
-    }),
-  ];
-}
-
-function subscriptionTools_() {
-  return [
-    apiTool_({
-      name: 'youtube_subscriptions_list',
-      title: 'List subscriptions or subscribers',
-      description:
-        'List the channels the account subscribes to, or (mySubscribers) the public subscribers of the account\'s channel.',
-      kind: 'read',
-      props: {
-        mySubscribers: boolProp_("List the account's subscribers instead of its subscriptions."),
-        channelId: strProp_("List another channel's public subscriptions."),
-        forChannelId: strProp_('Check whether the listed subscriptions include these channel ID(s).'),
-        order: strProp_('Sort order.', ['relevance', 'unread', 'alphabetical']),
-        ...listProps_(SUBSCRIPTION_PARTS, 50),
-      },
-      request: function (a) {
-        const extra = { ...subscriptionFilter_(a), ...pick_(a, ['forChannelId', 'order']) };
-        return { path: '/subscriptions', query: listQuery_(a, SUBSCRIPTION_PARTS, extra) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_subscriptions_subscribe',
-      title: 'Subscribe to a channel',
-      description: 'Subscribe the account to a channel.',
-      kind: 'write',
-      props: { channelId: strProp_('Channel ID to subscribe to.') },
-      required: ['channelId'],
-      request: function (a) {
-        const body = { snippet: { resourceId: { kind: 'youtube#channel', channelId: a.channelId } } };
-        return { method: 'POST', path: '/subscriptions', query: { part: 'snippet' }, body: body };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_subscriptions_unsubscribe',
-      title: 'Unsubscribe from a channel',
-      description: 'Remove a subscription. Needs the subscription ID from youtube_subscriptions_list, not the channel ID.',
-      kind: 'delete',
-      props: { subscriptionId: strProp_('Subscription ID.') },
-      required: ['subscriptionId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/subscriptions', query: { id: a.subscriptionId } };
-      },
-    }),
-  ];
-}
-
-function captionTools_() {
-  const captionIdProp = strProp_('Caption track ID.');
-  const contentProp = strProp_('Full text of the caption file (SRT, VTT, SBV or TTML).');
-  return [
-    apiTool_({
-      name: 'youtube_captions_list',
-      title: 'List caption tracks',
-      description: 'List the caption tracks of a video.',
-      kind: 'read',
-      props: { videoId: strProp_('Video ID.') },
-      required: ['videoId'],
-      request: function (a) {
-        return { path: '/captions', query: { part: 'snippet', videoId: a.videoId } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_captions_download',
-      title: 'Download a caption track',
-      description: "Download a caption track's text. Only works for videos the account owns.",
-      kind: 'read',
-      props: {
-        captionId: captionIdProp,
-        format: strProp_('Output format. Default srt.', ['srt', 'vtt', 'sbv', 'ttml', 'scc']),
-        translateTo: strProp_('ISO 639-1 language to machine-translate the track into.'),
-      },
-      required: ['captionId'],
-      request: function (a) {
-        const query = { tfmt: a.format || 'srt', tlang: a.translateTo };
-        return { path: '/captions/' + encodeURIComponent(a.captionId), query: query, raw: true };
-      },
-    }),
-    defineTool_({
-      name: 'youtube_captions_upload',
-      title: 'Upload a caption track',
-      description: 'Add a caption track to a video from caption file text.',
-      kind: 'write',
-      props: {
-        videoId: strProp_('Video ID.'),
-        language: strProp_('BCP-47 language of the track, e.g. "en".'),
-        name: strProp_('Track name shown to viewers. Default empty.'),
-        content: contentProp,
-        isDraft: boolProp_('Keep the track hidden from viewers.'),
-      },
-      required: ['videoId', 'language', 'content'],
-      handler: function (a) {
-        const snippet = compact_({ videoId: a.videoId, language: a.language, name: a.name || '', isDraft: a.isDraft });
-        return uploadCaption_('POST', { snippet: snippet }, a);
-      },
-    }),
-    defineTool_({
-      name: 'youtube_captions_update',
-      title: 'Update a caption track',
-      description: 'Replace the text of a caption track and/or publish or unpublish it.',
-      kind: 'write',
-      props: { captionId: captionIdProp, content: contentProp, isDraft: boolProp_('Whether the track is hidden from viewers.') },
-      required: ['captionId'],
-      handler: updateCaption_,
-    }),
-    apiTool_({
-      name: 'youtube_captions_delete',
-      title: 'Delete a caption track',
-      description: 'Permanently delete a caption track.',
-      kind: 'delete',
-      props: { captionId: captionIdProp },
-      required: ['captionId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/captions', query: { id: a.captionId } };
-      },
-    }),
-  ];
-}
-
-function memberTools_() {
-  return [
-    apiTool_({
-      name: 'youtube_members_list',
-      title: 'List channel members',
-      description: 'List paying channel members. Only works for channels with memberships enabled.',
-      kind: 'read',
-      props: {
-        mode: strProp_('all_current (default) or updates for new members since the last call.', ['all_current', 'updates']),
-        hasAccessToLevel: strProp_('Only members with access to this level ID.'),
-        maxResults: intProp_('Page size, 1-1000.', 1, 1000),
-        pageToken: strProp_('nextPageToken from an earlier call.'),
-      },
-      request: function (a) {
-        const query = { part: 'snippet', ...pick_(a, ['mode', 'hasAccessToLevel', 'maxResults', 'pageToken']) };
-        return { path: '/members', query: query };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_membership_levels_list',
-      title: 'List membership levels',
-      description: "List the channel's membership levels.",
-      kind: 'read',
-      props: {},
-      request: function () {
-        return { path: '/membershipsLevels', query: { part: 'id,snippet' } };
-      },
-    }),
-  ];
-}
-
-function communityTools_() {
-  return [].concat(searchTools_(), subscriptionTools_(), captionTools_(), memberTools_());
-}
-
-// ===== 17_tools_live.js =====
-/** Live streaming: broadcasts, ingestion streams and live chat. */
-
-const BROADCAST_PARTS = 'snippet,status,contentDetails';
-const STREAM_PARTS = 'snippet,cdn,status,contentDetails';
-const BROADCAST_SNIPPET_FIELDS = Object.freeze(['title', 'description', 'scheduledStartTime', 'scheduledEndTime']);
-const BROADCAST_STATUS_FIELDS = Object.freeze(['privacyStatus', 'selfDeclaredMadeForKids']);
-
-function broadcastProps_() {
-  return {
-    title: strProp_('Broadcast title.'),
-    description: strProp_('Broadcast description.'),
-    scheduledStartTime: strProp_('ISO 8601 start time.'),
-    scheduledEndTime: strProp_('ISO 8601 end time.'),
-    privacyStatus: strProp_('Visibility.', PRIVACY_VALUES),
-    selfDeclaredMadeForKids: boolProp_('Whether the broadcast is made for kids.'),
-  };
-}
-
-/** The API accepts exactly one of id / broadcastStatus / mine. */
-function broadcastFilter_(args) {
-  if (args.id) return { id: args.id };
-  if (args.broadcastStatus) return { broadcastStatus: args.broadcastStatus };
-  return { mine: true };
-}
-
-function createBroadcastRequest_(args) {
-  const body = {
-    snippet: compact_(pick_(args, BROADCAST_SNIPPET_FIELDS)),
-    status: compact_({
-      privacyStatus: args.privacyStatus || 'private',
-      selfDeclaredMadeForKids: args.selfDeclaredMadeForKids === true,
-    }),
-    contentDetails: compact_({
-      enableAutoStart: args.enableAutoStart,
-      enableAutoStop: args.enableAutoStop,
-      enableDvr: args.enableDvr,
-    }),
-  };
-  return { method: 'POST', path: '/liveBroadcasts', query: { part: BROADCAST_PARTS }, body: body };
-}
-
-function createStreamRequest_(args) {
-  const body = {
-    snippet: compact_(pick_(args, ['title', 'description'])),
-    cdn: {
-      ingestionType: args.ingestionType || 'rtmp',
-      resolution: args.resolution || 'variable',
-      frameRate: args.frameRate || 'variable',
-    },
-    contentDetails: { isReusable: args.isReusable !== false },
-  };
-  return { method: 'POST', path: '/liveStreams', query: { part: 'snippet,cdn,contentDetails' }, body: body };
-}
-
-function broadcastTools_() {
-  const broadcastIdProp = strProp_('Broadcast ID (same as its video ID).');
-  return [
-    apiTool_({
-      name: 'youtube_live_broadcasts_list',
-      title: 'List live broadcasts',
-      description: "List the account's live broadcasts, optionally by status. The liveChatId is in snippet.liveChatId.",
-      kind: 'read',
-      props: {
-        id: strProp_('Broadcast ID(s), comma-separated.'),
-        broadcastStatus: strProp_('Filter by status.', ['active', 'all', 'completed', 'upcoming']),
-        ...listProps_(BROADCAST_PARTS, 50),
-      },
-      request: function (a) {
-        return { path: '/liveBroadcasts', query: listQuery_(a, BROADCAST_PARTS, broadcastFilter_(a)) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_broadcasts_create',
-      title: 'Schedule a live broadcast',
-      description:
-        'Schedule a live broadcast. To go live, also create a stream (youtube_live_streams_create), bind it ' +
-        '(youtube_live_broadcasts_bind), send video to the ingestion address, then transition to live.',
-      kind: 'write',
-      props: {
-        ...broadcastProps_(),
-        enableAutoStart: boolProp_('Go live automatically when the stream starts sending data.'),
-        enableAutoStop: boolProp_('End automatically when the stream stops.'),
-        enableDvr: boolProp_('Let viewers rewind during the broadcast.'),
-      },
-      required: ['title', 'scheduledStartTime'],
-      request: createBroadcastRequest_,
-    }),
-    defineTool_({
-      name: 'youtube_live_broadcasts_update',
-      title: 'Update a live broadcast',
-      description: 'Change a broadcast\'s title, description, schedule or visibility. Fields you omit are preserved.',
-      kind: 'write',
-      props: { broadcastId: broadcastIdProp, ...broadcastProps_() },
-      required: ['broadcastId'],
-      handler: function (a) {
-        return mergeUpdate_({
-          path: '/liveBroadcasts',
-          id: a.broadcastId,
-          account: a.account,
-          label: 'Broadcast',
-          parts: {
-            snippet: partChanges_(a, BROADCAST_SNIPPET_FIELDS),
-            status: partChanges_(a, BROADCAST_STATUS_FIELDS),
-          },
-        });
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_broadcasts_delete',
-      title: 'Delete a live broadcast',
-      description: 'Permanently delete a broadcast.',
-      kind: 'delete',
-      props: { broadcastId: broadcastIdProp },
-      required: ['broadcastId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/liveBroadcasts', query: { id: a.broadcastId } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_broadcasts_bind',
-      title: 'Bind a stream to a broadcast',
-      description: 'Attach an ingestion stream to a broadcast. Omit streamId to unbind.',
-      kind: 'write',
-      props: { broadcastId: broadcastIdProp, streamId: strProp_('Stream ID. Omit to unbind.') },
-      required: ['broadcastId'],
-      request: function (a) {
-        const query = { id: a.broadcastId, streamId: a.streamId, part: BROADCAST_PARTS };
-        return { method: 'POST', path: '/liveBroadcasts/bind', query: query };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_broadcasts_transition',
-      title: 'Start or end a live broadcast',
-      description: 'Move a broadcast to testing, live or complete. The bound stream must be active before going live.',
-      kind: 'write',
-      props: { broadcastId: broadcastIdProp, broadcastStatus: strProp_('Target status.', ['testing', 'live', 'complete']) },
-      required: ['broadcastId', 'broadcastStatus'],
-      request: function (a) {
-        const query = { id: a.broadcastId, broadcastStatus: a.broadcastStatus, part: 'snippet,status' };
-        return { method: 'POST', path: '/liveBroadcasts/transition', query: query };
-      },
-    }),
-  ];
-}
-
-function streamTools_() {
-  return [
-    apiTool_({
-      name: 'youtube_live_streams_list',
-      title: 'List live streams',
-      description:
-        "List the account's ingestion streams. The response includes the RTMP address and the secret stream key " +
-        '(cdn.ingestionInfo); do not share it.',
-      kind: 'read',
-      props: { id: strProp_('Stream ID(s), comma-separated.'), ...listProps_(STREAM_PARTS, 50) },
-      request: function (a) {
-        return { path: '/liveStreams', query: listQuery_(a, STREAM_PARTS, a.id ? { id: a.id } : { mine: true }) };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_streams_create',
-      title: 'Create a live stream',
-      description: 'Create an ingestion stream (the encoder endpoint) to bind to broadcasts.',
-      kind: 'write',
-      props: {
-        title: strProp_('Stream title.'),
-        description: strProp_('Stream description.'),
-        ingestionType: strProp_('Default rtmp.', ['rtmp', 'dash', 'hls', 'webrtc']),
-        resolution: strProp_('e.g. 1080p, 720p or variable (default).'),
-        frameRate: strProp_('30fps, 60fps or variable (default).'),
-        isReusable: boolProp_('Whether the stream can serve several broadcasts. Default true.'),
-      },
-      required: ['title'],
-      request: createStreamRequest_,
-    }),
-    apiTool_({
-      name: 'youtube_live_streams_delete',
-      title: 'Delete a live stream',
-      description: 'Permanently delete an ingestion stream.',
-      kind: 'delete',
-      props: { streamId: strProp_('Stream ID.') },
-      required: ['streamId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/liveStreams', query: { id: a.streamId } };
-      },
-    }),
-  ];
-}
-
-function liveChatTools_() {
-  const chatIdProp = strProp_('Live chat ID (snippet.liveChatId of the broadcast).');
-  return [
-    apiTool_({
-      name: 'youtube_live_chat_messages_list',
-      title: 'Read live chat',
-      description: 'Read messages from a live chat. Pass the returned nextPageToken to fetch only newer messages.',
-      kind: 'read',
-      props: { liveChatId: chatIdProp, maxResults: intProp_('Page size, 200-2000.', 200, 2000), pageToken: strProp_('nextPageToken from an earlier call.') },
-      required: ['liveChatId'],
-      request: function (a) {
-        const query = { part: 'snippet,authorDetails', ...pick_(a, ['liveChatId', 'maxResults', 'pageToken']) };
-        return { path: '/liveChat/messages', query: query };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_chat_messages_send',
-      title: 'Send a live chat message',
-      description: "Post a message to a live chat as the account's channel.",
-      kind: 'write',
-      props: { liveChatId: chatIdProp, text: strProp_('Message text (max 200 characters).') },
-      required: ['liveChatId', 'text'],
-      request: function (a) {
-        const snippet = { liveChatId: a.liveChatId, type: 'textMessageEvent', textMessageDetails: { messageText: a.text } };
-        return { method: 'POST', path: '/liveChat/messages', query: { part: 'snippet' }, body: { snippet: snippet } };
-      },
-    }),
-    apiTool_({
-      name: 'youtube_live_chat_messages_delete',
-      title: 'Delete a live chat message',
-      description: 'Delete a message from a live chat the account moderates.',
-      kind: 'delete',
-      props: { messageId: strProp_('Live chat message ID.') },
-      required: ['messageId'],
-      request: function (a) {
-        return { method: 'DELETE', path: '/liveChat/messages', query: { id: a.messageId } };
-      },
-    }),
-  ];
-}
-
-function liveTools_() {
-  return [].concat(broadcastTools_(), streamTools_(), liveChatTools_());
-}
-
-// ===== 18_tools_analytics.js =====
-/** YouTube Analytics reports and the generic escape hatch for every other endpoint. */
-
-const DEFAULT_ANALYTICS_METRICS =
-  'views,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost,likes,comments,shares';
-const GENERIC_PATH_PATTERN = /^\/[A-Za-z0-9_\-\/.]*$/;
-
-/** Turns the column-header + row-array report into a list of plain objects. */
-function tabulateReport_(report) {
-  const columns = (report.columnHeaders || []).map(function (header) {
-    return header.name;
-  });
-  const rows = (report.rows || []).map(function (row) {
-    return columns.reduce(function (record, name, index) {
-      return { ...record, [name]: row[index] };
-    }, {});
-  });
-  return { columns: columns, rowCount: rows.length, rows: rows };
-}
-
-function queryAnalytics_(args) {
-  const query = {
-    ids: args.ids || 'channel==MINE',
-    startDate: args.startDate || isoDateDaysAgo_(LIMITS.DEFAULT_ANALYTICS_DAYS),
-    endDate: args.endDate || isoDateDaysAgo_(0),
-    metrics: args.metrics || DEFAULT_ANALYTICS_METRICS,
-    ...pick_(args, ['dimensions', 'filters', 'sort', 'maxResults', 'startIndex', 'currency']),
-  };
-  const report = ytRequest_({ api: 'analytics', path: '/reports', query: query, account: args.account });
-  return { startDate: query.startDate, endDate: query.endDate, ...tabulateReport_(report) };
-}
-
-function genericApiRequest_(args) {
-  const path = args.path;
-  if (!GENERIC_PATH_PATTERN.test(path) || path.indexOf('..') !== -1 || path.indexOf('//') !== -1) {
-    throw createError_('"path" must be an API path such as "/activities" (letters, digits, "/", "_", "-", ".").');
-  }
-  return ytRequest_({
-    api: args.api || 'data',
-    method: args.method || 'GET',
-    path: path,
-    query: args.query || {},
-    body: args.body,
-    account: args.account,
-  });
-}
-
-function analyticsTools_() {
-  return [
-    defineTool_({
-      name: 'youtube_analytics_query',
-      title: 'Query channel analytics',
-      description:
-        'Run a YouTube Analytics report for the account\'s channel (the numbers shown in YouTube Studio). ' +
-        'Defaults to channel totals for the last 28 days. Examples: daily trend: dimensions="day", sort="day"; ' +
-        'top videos: dimensions="video", metrics="views,estimatedMinutesWatched", sort="-views", maxResults=10; ' +
-        'one video: filters="video==VIDEO_ID"; traffic sources: dimensions="insightTrafficSourceType"; ' +
-        'audience: dimensions="ageGroup,gender", metrics="viewerPercentage"; countries: dimensions="country"; ' +
-        'revenue (monetised channels): metrics="estimatedRevenue,cpm,playbackBasedCpm".',
-      kind: 'read',
-      props: {
-        startDate: strProp_('YYYY-MM-DD. Default 28 days ago.'),
-        endDate: strProp_('YYYY-MM-DD. Default today.'),
-        metrics: strProp_('Comma-separated metrics. Default: ' + DEFAULT_ANALYTICS_METRICS + '.'),
-        dimensions: strProp_('Comma-separated dimensions, e.g. day, video, country, deviceType.'),
-        filters: strProp_('Semicolon-separated filters, e.g. "video==abc123;country==IN".'),
-        sort: strProp_('Comma-separated sort keys; prefix with "-" for descending.'),
-        maxResults: intProp_('Maximum rows.', 1, 1000),
-        startIndex: intProp_('1-based index of the first row, for paging.', 1),
-        currency: strProp_('ISO 4217 currency for revenue metrics. Default USD.'),
-        ids: strProp_('Default "channel==MINE". Content owners can pass "contentOwner==NAME".'),
-      },
-      handler: queryAnalytics_,
-    }),
-    defineTool_({
-      name: 'youtube_api_request',
-      title: 'Call any YouTube API endpoint',
-      description:
-        'Escape hatch: call any endpoint of the YouTube Data API v3 (api="data"), Analytics API v2 ' +
-        '("analytics") or Reporting API v1 ("reporting") that has no dedicated tool, e.g. /activities, ' +
-        '/playlistImages, /liveChat/moderators, /liveChat/bans, /videos/reportAbuse, /i18nLanguages, analytics ' +
-        '/groups and /groupItems, reporting /jobs. Prefer the dedicated tools when one exists.',
-      kind: 'delete',
-      props: {
-        api: strProp_('Which API. Default data.', Object.keys(API_BASES)),
-        method: strProp_('HTTP method. Default GET.', ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
-        path: strProp_('Path below the API root, e.g. "/activities".'),
-        query: objProp_('Query parameters, e.g. {"part":"snippet","mine":true}.'),
-        body: objProp_('JSON request body for POST / PUT / PATCH.'),
-      },
-      required: ['path'],
-      handler: genericApiRequest_,
     }),
   ];
 }

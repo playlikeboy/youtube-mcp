@@ -16,10 +16,6 @@ function listProp_(description) {
   return { type: 'array', items: { type: 'string' }, description: description };
 }
 
-function objProp_(description) {
-  return { type: 'object', description: description };
-}
-
 const ACCOUNT_PROP = strProp_('Alias of the connected account to act as. Omit for the default account.');
 
 const SOURCE_PROPS = Object.freeze({
@@ -87,16 +83,7 @@ function apiTool_(spec) {
 }
 
 function allTools_() {
-  return [].concat(
-    accountTools_(),
-    channelTools_(),
-    videoTools_(),
-    playlistTools_(),
-    commentTools_(),
-    communityTools_(),
-    liveTools_(),
-    analyticsTools_()
-  );
+  return accountTools_().concat(videoTools_());
 }
 
 function findTool_(name) {
@@ -115,7 +102,6 @@ function matchesType_(type, value) {
   if (type === 'string') return typeof value === 'string';
   if (type === 'integer') return Number.isInteger(value);
   if (type === 'boolean') return typeof value === 'boolean';
-  if (type === 'object') return isPlainObject_(value);
   if (type === 'array') {
     return Array.isArray(value) && value.every(function (item) { return typeof item === 'string'; });
   }

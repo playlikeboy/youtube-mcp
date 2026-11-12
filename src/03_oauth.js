@@ -95,13 +95,13 @@ function exchangeAuthCode_(code) {
 }
 
 function fetchOwnChannel_(accessToken) {
-  const url = API_BASES.data + '/channels' + toQueryString_({ part: 'snippet', mine: true });
+  const url = API_BASE + '/channels' + toQueryString_({ part: 'snippet', mine: true });
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
     headers: { Authorization: 'Bearer ' + accessToken },
     muteHttpExceptions: true,
   });
-  const body = parseApiResponse_(response, false);
+  const body = parseApiResponse_(response);
   const channel = (body.items || [])[0];
   if (!channel) {
     throw createError_('That Google account has no YouTube channel.');

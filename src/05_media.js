@@ -101,20 +101,3 @@ function fetchSourceBlob_(source, maxBytes) {
   const mimeType = (findHeader_(response.getHeaders(), 'Content-Type') || 'application/octet-stream').split(';')[0];
   return { bytes: bytes, mimeType: mimeType.trim() };
 }
-
-function toBytes_(text) {
-  return Utilities.newBlob(text).getBytes();
-}
-
-/** Builds a multipart/related body: JSON metadata followed by the media bytes. */
-function buildMultipartRelated_(metadata, mediaBytes, mediaType) {
-  const boundary = 'ytmcp' + Utilities.getUuid().replace(/-/g, '');
-  const head =
-    '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) +
-    '\r\n--' + boundary + '\r\nContent-Type: ' + mediaType + '\r\n\r\n';
-  const tail = '\r\n--' + boundary + '--';
-  return {
-    contentType: 'multipart/related; boundary=' + boundary,
-    payload: toBytes_(head).concat(mediaBytes, toBytes_(tail)),
-  };
-}

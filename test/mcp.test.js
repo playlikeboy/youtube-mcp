@@ -89,8 +89,20 @@ test('tools/list returns unique, well-formed tool definitions', () => {
   setup();
   const tools = post({ jsonrpc: '2.0', id: 1, method: 'tools/list' }).result.tools;
   const names = tools.map((tool) => tool.name);
-  assert.ok(tools.length >= 50);
-  assert.equal(new Set(names).size, names.length);
+  assert.deepEqual(names, [
+    'youtube_accounts_list',
+    'youtube_accounts_connect',
+    'youtube_accounts_remove',
+    'youtube_accounts_set_default',
+    'youtube_videos_list',
+    'youtube_videos_list_mine',
+    'youtube_videos_upload',
+    'youtube_videos_upload_continue',
+    'youtube_videos_update',
+    'youtube_videos_delete',
+    'youtube_thumbnails_set',
+    'youtube_video_categories_list',
+  ]);
   tools.forEach((tool) => {
     assert.match(tool.name, /^youtube_[a-z_]+$/);
     assert.ok(tool.description.length > 10, tool.name);
@@ -107,10 +119,11 @@ test('unknown tool is a protocol error', () => {
 
 test('invalid arguments come back as a tool error the model can read', () => {
   setup();
-  const result = call('youtube_videos_rate', { videoId: 5, rating: 'love', extra: true }).result;
+  const result = call('youtube_videos_update', { videoId: 5, privacyStatus: 'secret', tags: [1], extra: true }).result;
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /"videoId" must be of type string/);
-  assert.match(result.content[0].text, /"rating" must be one of/);
+  assert.match(result.content[0].text, /"privacyStatus" must be one of/);
+  assert.match(result.content[0].text, /"tags" must be an array of strings/);
   assert.match(result.content[0].text, /Unknown argument "extra"/);
 });
 
